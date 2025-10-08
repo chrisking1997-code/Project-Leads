@@ -1,0 +1,599 @@
+// ============================================
+// LEADS GENERATOR API SERVER - FREE VERSION
+// 整合免費API：Companies House, Hunter.io免費版, Clearbit
+// ============================================
+
+const express = require('express');
+const cors = require('cors');
+const axios = require('axios');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+require('dotenv').config();
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+// ============================================
+// MIDDLEWARE
+// ============================================
+app.use(helmet());
+app.use(cors());
+app.use(express.json());
+
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 50 // 降低限制因為是免費API
+});
+app.use('/api/', limiter);
+
+// ============================================
+// 免費 API 配置
+// ============================================
+// Companies House (UK) - 完全免費
+// 註冊: https://developer.company-information.service.gov.uk/
+const COMPANIES_HOUSE_API_KEY = process.env.COMPANIES_HOUSE_API_KEY;
+
+// Hunter.io 免費版 - 25次/月
+// 註冊: https://hunter.io/users/sign_up
+const HUNTER_API_KEY = process.env.HUNTER_API_KEY;
+
+// Clearbit (有限免費)
+const CLEARBIT_API_KEY = process.env.CLEARBIT_API_KEY;
+
+// ============================================
+// 1. COMPANIES HOUSE API (UK) - 完全免費
+// ============================================
+async function searchCompaniesHouse(companyName) {
+  if (!COMPANIES_HOUSE_API_KEY) {
+    console.log('Companies House API key not configured');
+    return [];
+  }
+
+  try {
+    // 搜尋公司
+    const searchResponse = await axios.get(
+      `https://api.company-information.service.gov.uk/search/companies`,
+      {
+        params: {
+          q: companyName,
+          items_per_page: 10
+        },
+        auth: {
+          username: COMPANIES_HOUSE_API_KEY,
+          password: ''
+        }
+      }
+    );
+
+    const companies = searchResponse.data.items || [];
+    const leads = [];
+
+    // 獲取每家公司的詳細資訊
+    for (const company of companies.slice(0, 5)) {
+      try {
+        // 獲取公司詳情
+        const companyDetail = await axios.get(
+          `https://api.company-information.service.gov.uk/company/${company.company_number}`,
+          {
+            auth: {
+              username: COMPANIES_HOUSE_API_KEY,
+              password: ''
+            }
+          }
+        );
+
+        // 獲取公司高階主管
+        const officersResponse = await axios.get(
+          `https://api.company-information.service.gov.uk/company/${company.company_number}/officers`,
+          {
+            auth: {
+              username: COMPANIES_HOUSE_API_KEY,
+              password: ''
+            }
+          }
+        );
+
+        const officers = officersResponse.data.items || [];
+        
+        // 為每位高階主管創建潛在客戶
+        for (const officer of officers.slice(0, 3)) {
+          if (officer.resigned_on) continue; // 跳過已離職的
+
+          const address = officer.address;
+          const location = [
+            address.locality,
+            address.postal_code,
+            'United Kingdom'
+          ].filter(Boolean).join(', ');
+
+          leads.push({
+            id: `ch-${company.company_number}-${officer.name.replace(/\s+/g, '-')}`,
+            name: officer.name,
+            jobTitle: officer.officer_role || 'Director',
+            company: company.title,
+            companyNumber: company.company_number,
+            industry: companyDetail.data.sic_codes ? 
+              getSICDescription(companyDetail.data.sic_codes[0]) : 'Unknown',
+            location: location,
+            address: formatAddress(address),
+            companyStatus: company.company_status,
+            companyType: company.company_type,
+            incorporationDate: companyDetail.data.date_of_creation,
+            email: null, // 需要用其他API補充
+            phone: null,
+            linkedin: null,
+            source: 'Companies House (UK)',
+            matchScore: 70
+          });
+        }
+      } catch (error) {
+        console.error(`Error fetching details for ${company.company_number}:`, error.message);
+      }
+    }
+
+    return leads;
+  } catch (error) {
+    console.error('Companies House API Error:', error.message);
+    return [];
+  }
+}
+
+// ============================================
+// 2. HUNTER.IO 免費版 (25次/月)
+// ============================================
+async function findEmailWithHunter(firstName, lastName, domain) {
+  if (!HUNTER_API_KEY) {
+    return null;
+  }
+
+  try {
+    const response = await axios.get('https://api.hunter.io/v2/email-finder', {
+      params: {
+        domain: domain,
+        first_name: firstName,
+        last_name: lastName,
+        api_key: HUNTER_API_KEY
+      }
+    });
+
+    if (response.data.data.email) {
+      return {
+        email: response.data.data.email,
+        score: response.data.data.score,
+        verified: response.data.data.status === 'valid'
+      };
+    }
+  } catch (error) {
+    if (error.response?.status === 429) {
+      console.log('Hunter.io rate limit reached (25/month on free tier)');
+    }
+    return null;
+  }
+
+  return null;
+}
+
+// 批次查找郵件（使用 Domain Search - 免費版每月25次）
+async function findCompanyEmailsHunter(domain) {
+  if (!HUNTER_API_KEY) {
+    return [];
+  }
+
+  try {
+    const response = await axios.get('https://api.hunter.io/v2/domain-search', {
+      params: {
+        domain: domain,
+        limit: 10,
+        api_key: HUNTER_API_KEY
+      }
+    });
+
+    return response.data.data.emails || [];
+  } catch (error) {
+    if (error.response?.status === 429) {
+      console.log('Hunter.io monthly limit reached');
+    }
+    return [];
+  }
+}
+
+// ============================================
+// 3. CLEARBIT API (有限免費)
+// ============================================
+async function enrichWithClearbit(domain) {
+  if (!CLEARBIT_API_KEY) {
+    return null;
+  }
+
+  try {
+    const response = await axios.get(`https://company.clearbit.com/v2/companies/find`, {
+      params: { domain: domain },
+      headers: {
+        'Authorization': `Bearer ${CLEARBIT_API_KEY}`
+      }
+    });
+
+    return {
+      company: response.data.name,
+      industry: response.data.category?.industry,
+      employees: response.data.metrics?.employees,
+      location: response.data.geo?.city + ', ' + response.data.geo?.country,
+      description: response.data.description,
+      phone: response.data.phone,
+      linkedin: response.data.linkedin?.handle,
+      twitter: response.data.twitter?.handle
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+// ============================================
+// 4. GITHUB API (完全免費 - 適合找開發者)
+// ============================================
+async function searchGitHubDevelopers(query, location) {
+  try {
+    const searchQuery = `${query} location:${location || 'UK'}`;
+    
+    const response = await axios.get('https://api.github.com/search/users', {
+      params: {
+        q: searchQuery,
+        per_page: 20
+      },
+      headers: {
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'Leads-Generator'
+      }
+    });
+
+    const users = response.data.items || [];
+    const leads = [];
+
+    for (const user of users.slice(0, 10)) {
+      try {
+        // 獲取用戶詳細資訊
+        const userDetail = await axios.get(user.url, {
+          headers: {
+            'Accept': 'application/vnd.github.v3+json',
+            'User-Agent': 'Leads-Generator'
+          }
+        });
+
+        const profile = userDetail.data;
+
+        leads.push({
+          id: `gh-${profile.id}`,
+          name: profile.name || profile.login,
+          jobTitle: profile.bio || 'Developer',
+          company: profile.company || 'Independent',
+          location: profile.location || 'Unknown',
+          email: profile.email,
+          github: profile.html_url,
+          linkedin: null,
+          blog: profile.blog,
+          twitter: profile.twitter_username,
+          source: 'GitHub',
+          followers: profile.followers,
+          repositories: profile.public_repos,
+          matchScore: 75
+        });
+      } catch (error) {
+        console.error(`Error fetching GitHub user details:`, error.message);
+      }
+    }
+
+    return leads;
+  } catch (error) {
+    console.error('GitHub API Error:', error.message);
+    return [];
+  }
+}
+
+// ============================================
+// UTILITY FUNCTIONS
+// ============================================
+
+function getSICDescription(code) {
+  const sicCodes = {
+    '62': 'Computer programming, consultancy',
+    '63': 'Information service activities',
+    '64': 'Financial service activities',
+    '70': 'Management consultancy',
+    '71': 'Architectural and engineering',
+    '72': 'Scientific research',
+    '73': 'Advertising and market research',
+    '82': 'Office administrative services'
+  };
+  
+  const mainCode = code.substring(0, 2);
+  return sicCodes[mainCode] || 'Other';
+}
+
+function formatAddress(address) {
+  if (!address) return null;
+  
+  return [
+    address.address_line_1,
+    address.address_line_2,
+    address.locality,
+    address.postal_code,
+    address.country
+  ].filter(Boolean).join(', ');
+}
+
+function extractDomainFromCompany(companyName) {
+  // 簡單的域名猜測
+  const cleaned = companyName
+    .toLowerCase()
+    .replace(/ltd|limited|plc|inc|corp|llc/gi, '')
+    .replace(/[^a-z0-9]/g, '')
+    .trim();
+  
+  return `${cleaned}.co.uk`;
+}
+
+function parseFullName(fullName) {
+  const parts = fullName.trim().split(/\s+/);
+  return {
+    firstName: parts[0],
+    lastName: parts.slice(1).join(' ') || parts[0]
+  };
+}
+
+// ============================================
+// 主要搜尋邏輯 - 整合所有免費API
+// ============================================
+async function searchLeadsWithFreeAPIs(criteria) {
+  let allLeads = [];
+
+  // 1. 如果是搜尋UK公司 - 使用 Companies House
+  if (criteria.company || (criteria.location && criteria.location.includes('UK'))) {
+    console.log('Searching Companies House (UK)...');
+    
+    const companyName = criteria.company || criteria.keywords || 'technology';
+    const companiesHouseLeads = await searchCompaniesHouse(companyName);
+    
+    allLeads = allLeads.concat(companiesHouseLeads);
+
+    // 嘗試用 Hunter.io 補充 email
+    if (HUNTER_API_KEY && companiesHouseLeads.length > 0) {
+      console.log('Enriching with Hunter.io emails...');
+      
+      for (const lead of companiesHouseLeads.slice(0, 5)) { // 限制5個避免超過免費額度
+        const domain = extractDomainFromCompany(lead.company);
+        const { firstName, lastName } = parseFullName(lead.name);
+        
+        const emailData = await findEmailWithHunter(firstName, lastName, domain);
+        if (emailData) {
+          lead.email = emailData.email;
+          lead.emailScore = emailData.score;
+          lead.emailVerified = emailData.verified;
+          lead.matchScore += 10;
+        }
+      }
+    }
+  }
+
+  // 2. 如果是搜尋開發者 - 使用 GitHub
+  if (criteria.jobTitle && 
+      (criteria.jobTitle.toLowerCase().includes('developer') || 
+       criteria.jobTitle.toLowerCase().includes('engineer') ||
+       criteria.jobTitle.toLowerCase().includes('programmer'))) {
+    console.log('Searching GitHub...');
+    
+    const query = criteria.jobTitle || 'developer';
+    const githubLeads = await searchGitHubDevelopers(query, criteria.location);
+    allLeads = allLeads.concat(githubLeads);
+  }
+
+  // 3. 使用 Clearbit 補充公司資訊
+  if (CLEARBIT_API_KEY && allLeads.length > 0) {
+    console.log('Enriching with Clearbit...');
+    
+    for (const lead of allLeads.slice(0, 3)) {
+      if (lead.company) {
+        const domain = extractDomainFromCompany(lead.company);
+        const enrichData = await enrichWithClearbit(domain);
+        
+        if (enrichData) {
+          lead.companyDescription = enrichData.description;
+          lead.companyEmployees = enrichData.employees;
+          if (!lead.phone) lead.phone = enrichData.phone;
+          if (!lead.linkedin) lead.linkedin = enrichData.linkedin;
+        }
+      }
+    }
+  }
+
+  return allLeads;
+}
+
+// ============================================
+// API ROUTES
+// ============================================
+
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    message: 'Free Leads Generator API is running',
+    apis: {
+      companiesHouse: COMPANIES_HOUSE_API_KEY ? '✅' : '❌',
+      hunter: HUNTER_API_KEY ? '✅ (25/month)' : '❌',
+      clearbit: CLEARBIT_API_KEY ? '✅' : '❌',
+      github: '✅ (Free)'
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.post('/api/leads/search', async (req, res) => {
+  try {
+    const { jobTitle, industry, company, location, keywords } = req.body;
+
+    if (!jobTitle && !company && !location && !keywords) {
+      return res.status(400).json({ 
+        error: 'Please provide at least one search criteria' 
+      });
+    }
+
+    const criteria = { jobTitle, industry, company, location, keywords };
+    console.log('Search criteria:', criteria);
+
+    // 使用免費API搜尋
+    let leads = await searchLeadsWithFreeAPIs(criteria);
+
+    // 如果沒有配置API或沒有結果，返回範例資料
+    if (leads.length === 0) {
+      console.log('No results from APIs, generating sample data...');
+      leads = generateSampleLeads(criteria);
+    }
+
+    // 按匹配分數排序
+    leads.sort((a, b) => b.matchScore - a.matchScore);
+
+    res.json({
+      success: true,
+      count: leads.length,
+      leads: leads,
+      criteria: criteria,
+      sources: [...new Set(leads.map(l => l.source))]
+    });
+
+  } catch (error) {
+    console.error('Search error:', error);
+    res.status(500).json({ 
+      error: 'Failed to search leads',
+      message: error.message 
+    });
+  }
+});
+
+// Email enrichment endpoint
+app.post('/api/leads/enrich-email', async (req, res) => {
+  try {
+    const { firstName, lastName, domain } = req.body;
+
+    if (!firstName || !lastName || !domain) {
+      return res.status(400).json({ 
+        error: 'firstName, lastName, and domain are required' 
+      });
+    }
+
+    const emailData = await findEmailWithHunter(firstName, lastName, domain);
+
+    if (!emailData) {
+      return res.status(404).json({ 
+        error: 'Email not found or API limit reached' 
+      });
+    }
+
+    res.json({
+      success: true,
+      email: emailData
+    });
+
+  } catch (error) {
+    console.error('Email enrichment error:', error);
+    res.status(500).json({ 
+      error: 'Failed to enrich email',
+      message: error.message 
+    });
+  }
+});
+
+// Export to CSV
+app.post('/api/leads/export', (req, res) => {
+  try {
+    const { leads } = req.body;
+
+    if (!leads || !Array.isArray(leads) || leads.length === 0) {
+      return res.status(400).json({ 
+        error: 'No leads provided for export' 
+      });
+    }
+
+    const headers = ['Name', 'Job Title', 'Company', 'Industry', 'Location', 'Email', 'Phone', 'LinkedIn', 'Source', 'Match Score'];
+    const csvRows = [
+      headers.join(','),
+      ...leads.map(lead => [
+        `"${lead.name || ''}"`,
+        `"${lead.jobTitle || ''}"`,
+        `"${lead.company || ''}"`,
+        `"${lead.industry || ''}"`,
+        `"${lead.location || ''}"`,
+        lead.email || '',
+        `"${lead.phone || ''}"`,
+        lead.linkedin || '',
+        `"${lead.source || ''}"`,
+        lead.matchScore || ''
+      ].join(','))
+    ];
+
+    const csv = csvRows.join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename=leads-export-${Date.now()}.csv`);
+    res.send(csv);
+
+  } catch (error) {
+    console.error('Export error:', error);
+    res.status(500).json({ 
+      error: 'Failed to export leads',
+      message: error.message 
+    });
+  }
+});
+
+// ============================================
+// 範例資料生成器（後備方案）
+// ============================================
+function generateSampleLeads(criteria) {
+  const industries = ['Technology', 'Finance', 'Healthcare', 'Retail', 'Manufacturing'];
+  const companies = ['TechCorp Ltd', 'InnovateLab UK', 'DataSystems Ltd', 'CloudNine UK', 'NextGen Solutions'];
+  const firstNames = ['James', 'Sarah', 'Michael', 'Emily', 'David', 'Jessica', 'Robert', 'Lisa'];
+  const lastNames = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Taylor', 'Miller', 'Davis'];
+  const ukLocations = ['London, UK', 'Manchester, UK', 'Birmingham, UK', 'Edinburgh, UK', 'Leeds, UK'];
+  
+  const sampleLeads = [];
+  const count = Math.floor(Math.random() * 8) + 5;
+  
+  for (let i = 0; i < count; i++) {
+    const firstName = firstNames[Math.floor(Math.random() * firstNames.length)];
+    const lastName = lastNames[Math.floor(Math.random() * lastNames.length)];
+    const company = criteria.company || companies[Math.floor(Math.random() * companies.length)];
+    const location = criteria.location || ukLocations[Math.floor(Math.random() * ukLocations.length)];
+    
+    sampleLeads.push({
+      id: `sample-${Date.now()}-${i}`,
+      name: `${firstName} ${lastName}`,
+      jobTitle: criteria.jobTitle || `${['Senior', 'Lead', 'Chief', 'Head of'][i % 4]} ${['Marketing', 'Sales', 'Technology', 'Operations'][i % 4]}`,
+      company: company,
+      industry: criteria.industry || industries[Math.floor(Math.random() * industries.length)],
+      location: location,
+      email: `${firstName.toLowerCase()}.${lastName.toLowerCase()}@${company.toLowerCase().replace(/\s+/g, '').replace('ltd', '')}.co.uk`,
+      phone: `+44 ${Math.floor(Math.random() * 90) + 10} ${Math.floor(Math.random() * 9000) + 1000} ${Math.floor(Math.random() * 9000) + 1000}`,
+      linkedin: `https://linkedin.com/in/${firstName.toLowerCase()}-${lastName.toLowerCase()}`,
+      source: 'Sample Data',
+      matchScore: Math.floor(Math.random() * 30) + 70
+    });
+  }
+  
+  return sampleLeads;
+}
+
+// ============================================
+// START SERVER
+// ============================================
+app.listen(PORT, () => {
+  console.log(`\n🚀 FREE Leads Generator API running on port ${PORT}`);
+  console.log(`📍 Health: http://localhost:${PORT}/api/health`);
+  console.log(`\n💰 FREE APIs Status:`);
+  console.log(`   Companies House: ${COMPANIES_HOUSE_API_KEY ? '✅ Configured (Unlimited)' : '❌ Not configured'}`);
+  console.log(`   Hunter.io: ${HUNTER_API_KEY ? '✅ Configured (25/month)' : '❌ Not configured'}`);
+  console.log(`   Clearbit: ${CLEARBIT_API_KEY ? '✅ Configured' : '❌ Not configured'}`);
+  console.log(`   GitHub: ✅ Always available (5000 requests/hour)`);
+  console.log(`\n💡 Get FREE API keys:`);
+  console.log(`   Companies House: https://developer.company-information.service.gov.uk/`);
+  console.log(`   Hunter.io: https://hunter.io/users/sign_up`);
+  console.log(`\n📊 Sample data available if no APIs configured`);
+});
