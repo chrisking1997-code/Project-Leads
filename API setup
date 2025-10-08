@@ -1,0 +1,523 @@
+# ============================================
+# 免費版 API 設定指南
+# ============================================
+
+# ============================================
+# PACKAGE.JSON
+# ============================================
+{
+  "name": "leads-generator-free-api",
+  "version": "1.0.0",
+  "description": "免費 Leads Generator Backend API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "axios": "^1.6.0",
+    "helmet": "^7.1.0",
+    "express-rate-limit": "^7.1.5",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
+
+# ============================================
+# .ENV 檔案配置
+# ============================================
+PORT=3001
+
+# Companies House API (英國公司資料) - 完全免費，無限制
+# 註冊: https://developer.company-information.service.gov.uk/
+# 1. 點擊 "Register" 建立帳號
+# 2. 登入後到 "Your applications" 
+# 3. 點擊 "Create an application"
+# 4. 填寫應用名稱和描述
+# 5. 複製 API Key
+COMPANIES_HOUSE_API_KEY=your_companies_house_key_here
+
+# Hunter.io API (Email 查找) - 免費 25 次/月
+# 註冊: https://hunter.io/users/sign_up
+# 1. 註冊免費帳號
+# 2. 到 Dashboard 點擊 "API" 標籤
+# 3. 複製 API Key
+# 4. 免費版限制: 25 次搜尋/月，50 次驗證/月
+HUNTER_API_KEY=your_hunter_api_key_here
+
+# Clearbit API (公司資訊) - 有限免費
+# 註冊: https://clearbit.com/
+# 注意: 需要信用卡但不會收費（免費額度內）
+CLEARBIT_API_KEY=your_clearbit_key_here
+
+# GitHub 不需要 API Key（但建議創建以增加限制）
+# 免費: 60 requests/hour (無認證)
+# 有認證: 5000 requests/hour
+# 創建 Personal Access Token: https://github.com/settings/tokens
+
+# ============================================
+# 安裝步驟
+# ============================================
+
+# 1. 創建專案資料夾
+mkdir leads-generator-free
+cd leads-generator-free
+
+# 2. 初始化 npm
+npm init -y
+
+# 3. 安裝依賴
+npm install express cors axios helmet express-rate-limit dotenv
+npm install --save-dev nodemon
+
+# 4. 創建檔案
+# - server.js (主程式)
+# - .env (API keys)
+# - .gitignore
+
+# 5. 啟動伺服器
+npm start
+
+# ============================================
+# 取得免費 API Keys 詳細步驟
+# ============================================
+
+# ----- Companies House (英國) -----
+# 網址: https://developer.company-information.service.gov.uk/
+# 
+# 步驟:
+# 1. 點擊右上角 "Sign in / Register"
+# 2. 創建新帳號（需要 email 驗證）
+# 3. 登入後，點擊 "Your applications"
+# 4. 點擊 "Add an application"
+# 5. 填寫:
+#    - Application name: "Leads Generator"
+#    - Description: "B2B lead generation tool"
+# 6. 送出後會顯示你的 API Key
+# 7. 複製 Key 到 .env 檔案
+#
+# 優點:
+# ✅ 完全免費
+# ✅ 無請求限制
+# ✅ 包含所有英國註冊公司資料
+# ✅ 包含董事和高階主管姓名
+# ✅ 包含公司地址和狀態
+#
+# 缺點:
+# ❌ 只有英國公司
+# ❌ 沒有 email 和電話
+
+# ----- Hunter.io (Email 查找) -----
+# 網址: https://hunter.io/users/sign_up
+#
+# 步驟:
+# 1. 點擊 "Start free trial"
+# 2. 使用 Google 或 Email 註冊
+# 3. 登入後，點擊右上角頭像
+# 4. 選擇 "API" 或到 https://hunter.io/api_keys
+# 5. 複製你的 API Key
+# 6. 貼到 .env 檔案
+#
+# 免費額度:
+# ✅ 25 次 Domain Search / 月
+# ✅ 50 次 Email Verification / 月
+# ✅ 不需要信用卡
+#
+# 使用建議:
+# 💡 只為最重要的 leads 查找 email
+# 💡 先用 Companies House 找到公司和人名
+# 💡 然後用 Hunter 補充 email
+
+# ----- Clearbit (選用) -----
+# 網址: https://clearbit.com/
+#
+# 注意: 需要信用卡但不會收費
+# 如果不想提供信用卡，可以跳過這個
+
+# ----- GitHub (開發者資料) -----
+# 完全免費，不需要 API Key
+# 但建議創建 Token 以增加請求限制:
+#
+# 步驟:
+# 1. 登入 GitHub
+# 2. 到 Settings > Developer settings
+# 3. Personal access tokens > Tokens (classic)
+# 4. Generate new token
+# 5. 不需要勾選任何權限（public data only）
+# 6. 複製 token
+
+# ============================================
+# 使用範例
+# ============================================
+
+# 測試 API 是否運作
+curl http://localhost:3001/api/health
+
+# 搜尋英國科技公司
+curl -X POST http://localhost:3001/api/leads/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "company": "Microsoft",
+    "location": "UK"
+  }'
+
+# 搜尋開發者（使用 GitHub）
+curl -X POST http://localhost:3001/api/leads/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jobTitle": "Software Developer",
+    "location": "London"
+  }'
+
+# 查找特定人的 email
+curl -X POST http://localhost:3001/api/leads/enrich-email \
+  -H "Content-Type: application/json" \
+  -d '{
+    "firstName": "John",
+    "lastName": "Smith",
+    "domain": "microsoft.com"
+  }'
+
+# ============================================
+# API 功能和限制
+# ============================================
+
+# Companies House (UK):
+# ✅ 搜尋: 無限制
+# ✅ 資料: 所有英國公司、董事、地址
+# ❌ 限制: 只有英國、無 email/電話
+# 💰 費用: 完全免費
+
+# Hunter.io:
+# ✅ Email 查找: 25次/月
+# ✅ Email 驗證: 50次/月
+# ❌ 限制: 月度配額
+# 💰 費用: 免費版，升級 $49/月
+
+# GitHub:
+# ✅ 搜尋開發者: 60次/小時（無認證）
+# ✅ 搜尋開發者: 5000次/小時（有認證）
+# ✅ 公開資料: 姓名、email、公司、位置
+# ❌ 限制: 只適合找技術人員
+# 💰 費用: 完全免費
+
+# Clearbit (選用):
+# ✅ 公司資訊補充
+# ❌ 限制: 需要信用卡（但免費額度內不收費）
+# 💰 費用: 有限免費
+
+# ============================================
+# 最佳使用策略
+# ============================================
+
+# 策略 1: 找英國 B2B 客戶
+# 1. 用 Companies House 搜尋公司和高階主管
+# 2. 用 Hunter.io 補充前 5-10 個最佳 leads 的 email
+# 3. 手動補充其他資訊
+# 成本: 完全免費（Hunter 免費額度內）
+
+# 策略 2: 找科技公司開發者
+# 1. 用 GitHub 搜尋開發者
+# 2. GitHub 已提供 email（如果公開）
+# 3. 用 Hunter.io 驗證 email 有效性
+# 成本: 完全免費
+
+# 策略 3: 混合搜尋
+# 1. Companies House 找公司 (UK)
+# 2. GitHub 找技術團隊
+# 3. Hunter.io 補充關鍵人物 email
+# 成本: 完全免費
+
+# ============================================
+# 每月可以獲得多少 Leads？
+# ============================================
+
+# 只用 Companies House:
+# - 無限制搜尋英國公司
+# - 每家公司 3-5 位高階主管
+# - 預估: 100-500+ leads/月（無 email）
+
+# Companies House + Hunter.io 免費版:
+# - 100-500 leads（姓名、公司、職位、地址）
+# - 其中 25 個有驗證過的 email
+# - 預估: 25 個完整 leads/月
+
+# 加上 GitHub（如果找開發者）:
+# - 額外 50-200 個開發者 leads
+# - 許多有公開 email
+# - 預估: 總共 75-225 個 leads/月
+
+# ============================================
+# 成本分析
+# ============================================
+
+# 完全免費方案:
+# - 主機: $0 (可用 Railway/Render 免費方案)
+# - APIs: $0 (使用免費額度)
+# - 總成本: $0/月
+# - 可獲得: 25-75 個完整 leads/月
+
+# 小預算方案:
+# - 主機: $5-7/月
+# - Hunter.io 付費: $49/月 (1000 次搜尋)
+# - 總成本: $54-56/月
+# - 可獲得: 1000+ 完整 leads/月
+
+# ============================================
+# .GITIGNORE
+# ============================================
+node_modules/
+.env
+.DS_Store
+*.log
+.vscode/
+.idea/
+dist/
+coverage/
+
+# ============================================
+# 部署到免費主機
+# ============================================
+
+# ----- Railway (推薦) -----
+# 網址: https://railway.app
+# 
+# 步驟:
+# 1. 註冊 Railway 帳號（用 GitHub 登入）
+# 2. 點擊 "New Project"
+# 3. 選擇 "Deploy from GitHub repo"
+# 4. 選擇你的 repository
+# 5. Railway 會自動檢測 Node.js
+# 6. 添加環境變數:
+#    - 點擊專案 > Variables
+#    - 加入所有 .env 的內容
+# 7. 部署完成！
+#
+# 免費額度:
+# ✅ $5 credit/月
+# ✅ 足夠小型應用運行
+# ✅ 自動 SSL
+# ✅ 自動部署
+
+# ----- Render -----
+# 網址: https://render.com
+#
+# 步驟:
+# 1. 註冊 Render 帳號
+# 2. 點擊 "New +" > "Web Service"
+# 3. 連接 GitHub repository
+# 4. 設定:
+#    - Name: leads-api
+#    - Environment: Node
+#    - Build Command: npm install
+#    - Start Command: npm start
+# 5. 添加環境變數
+# 6. 點擊 "Create Web Service"
+#
+# 免費方案:
+# ✅ 完全免費
+# ✅ 自動 SSL
+# ❌ 閒置後會休眠（需要 15 秒喚醒）
+
+# ----- Heroku -----
+# 較簡單但需付費 ($7/月最低)
+
+# ============================================
+# 連接前端到後端
+# ============================================
+
+# 在你的 React 應用中，更新 API 呼叫:
+
+// 開發環境
+const API_URL = 'http://localhost:3001/api';
+
+// 生產環境
+// const API_URL = 'https://your-app.railway.app/api';
+
+const searchLeads = async (criteria) => {
+  try {
+    const response = await fetch(`${API_URL}/leads/search`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(criteria)
+    });
+    
+    if (!response.ok) {
+      throw new Error('Search failed');
+    }
+    
+    const data = await response.json();
+    return data.leads;
+  } catch (error) {
+    console.error('Error:', error);
+    throw error;
+  }
+};
+
+# ============================================
+# 測試 API 的範例請求
+# ============================================
+
+# 1. 搜尋倫敦的科技公司
+POST http://localhost:3001/api/leads/search
+Content-Type: application/json
+
+{
+  "company": "Technology",
+  "location": "London, UK"
+}
+
+# 2. 搜尋 Marketing Manager
+POST http://localhost:3001/api/leads/search
+Content-Type: application/json
+
+{
+  "jobTitle": "Marketing Manager",
+  "location": "UK"
+}
+
+# 3. 搜尋軟體開發者（使用 GitHub）
+POST http://localhost:3001/api/leads/search
+Content-Type: application/json
+
+{
+  "jobTitle": "Software Developer",
+  "location": "Manchester"
+}
+
+# 4. 查找特定人的 email
+POST http://localhost:3001/api/leads/enrich-email
+Content-Type: application/json
+
+{
+  "firstName": "John",
+  "lastName": "Smith",
+  "domain": "example.co.uk"
+}
+
+# ============================================
+# 常見問題 FAQ
+# ============================================
+
+# Q: 完全不設定 API Keys 可以用嗎？
+# A: 可以！會自動使用範例資料，適合測試介面
+
+# Q: 只設定 Companies House 夠用嗎？
+# A: 如果只找英國客戶，完全夠用！可獲得公司和高階主管資訊
+
+# Q: Hunter.io 25 次用完了怎麼辦？
+# A: 等下個月重置，或升級到付費版 ($49/月 1000次)
+
+# Q: 可以增加每月免費 leads 數量嗎？
+# A: 可以！創建多個 Hunter.io 帳號（用不同 email）
+
+# Q: GitHub API 限制 60 次/小時夠嗎？
+# A: 建議創建 GitHub Token，限制提升到 5000 次/小時
+
+# Q: 我需要全部 3 個 API 嗎？
+# A: 不需要，看你的目標:
+#    - 找英國客戶 → 只要 Companies House
+#    - 找開發者 → 只要 GitHub
+#    - 需要 email → 加上 Hunter.io
+
+# Q: 資料準確度如何？
+# A: Companies House 是官方資料，100% 準確
+#    Hunter.io 有信心分數，通常 >90% 準確
+#    GitHub 是使用者自填，準確度較低
+
+# ============================================
+# 進階功能建議
+# ============================================
+
+# 如果你的應用成功，可以考慮:
+
+# 1. 增加資料庫儲存
+#    - PostgreSQL 或 MongoDB
+#    - 儲存搜尋歷史和 leads
+#    - 避免重複呼叫 API
+
+# 2. 加入快取機制
+#    - Redis 快取常見搜尋
+#    - 減少 API 呼叫次數
+
+# 3. 加入用戶認證
+#    - JWT token
+#    - 追蹤每個用戶的 API 使用量
+
+# 4. 排程自動更新
+#    - 每週自動搜尋新 leads
+#    - Email 通知新發現的潛在客戶
+
+# 5. 升級到付費 API
+#    - Apollo.io ($49/月) - 最完整
+#    - ZoomInfo - 企業級
+#    - 自己的爬蟲系統
+
+# ============================================
+# 授權和法律注意事項
+# ============================================
+
+# ⚠️ 重要提醒:
+
+# 1. GDPR 合規 (歐盟)
+#    - 只收集必要資料
+#    - 提供用戶刪除請求功能
+#    - 明確告知資料用途
+
+# 2. Companies House 使用條款
+#    - 可商業使用
+#    - 需註明資料來源
+#    - 不可轉售原始資料
+
+# 3. Hunter.io 使用條款
+#    - 禁止大量爬取
+#    - 遵守配額限制
+#    - 用於合法行銷用途
+
+# 4. 冷郵件/冷電話法規
+#    - UK: 遵守 PECR 規定
+#    - 提供退訂選項
+#    - 不打給 TPS 註冊號碼
+
+# ============================================
+# 支援和資源
+# ============================================
+
+# Companies House API 文件:
+# https://developer.company-information.service.gov.uk/api/docs/
+
+# Hunter.io API 文件:
+# https://hunter.io/api-documentation
+
+# GitHub API 文件:
+# https://docs.github.com/en/rest
+
+# Node.js + Express 教學:
+# https://expressjs.com/en/starter/installing.html
+
+# 如果遇到問題:
+# 1. 檢查 API key 是否正確設定
+# 2. 查看 console.log 的錯誤訊息
+# 3. 確認 API 配額未用盡
+# 4. 測試 /api/health endpoint
+
+# ============================================
+# 準備好了嗎？
+# ============================================
+
+# 開始步驟:
+# 1. npm install (安裝依賴)
+# 2. 註冊 Companies House API (5 分鐘)
+# 3. 註冊 Hunter.io 免費版 (2 分鐘)
+# 4. 設定 .env 檔案
+# 5. npm start (啟動伺服器)
+# 6. 測試搜尋功能
+# 7. 開始找 leads！
+
+# 祝你成功！🚀
